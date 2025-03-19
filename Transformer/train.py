@@ -60,3 +60,5 @@ if __name__ == "__main__":
     #     print(input["src_ids"].shape)
     #     print(input["src_mask"].shape)
     #     break
+    input = next(iter(train_dataloader))
+    output = transformer(input["src_ids"], input["src_padmask"])

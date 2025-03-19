@@ -80,9 +80,9 @@ class CustomDataset(Dataset):
 
         return {
             "src_ids": torch.tensor(self.tokenized_en[i].ids),
-            "src_mask": torch.tensor(self.tokenized_en[i].attention_mask),
+            "src_padmask": torch.tensor(self.tokenized_en[i].attention_mask),
             "tar_ids": torch.tensor(self.tokenized_ch[i].ids),
-            "tar_mask": torch.tensor(self.tokenized_ch[i].attention_mask),
+            "tar_padmask": torch.tensor(self.tokenized_ch[i].attention_mask),
         }
 
 

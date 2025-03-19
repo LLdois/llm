@@ -15,9 +15,18 @@ class PositionalEncoding(nn.Module):
         )
         self.pos[:, :, 0::2] = torch.sin(temp)
         self.pos[:, :, 1::2] = torch.cos(temp)
+        self.max_len = max_len
+        self.d_model = d_model
 
-    def forward(self, input_embedding):
+    def forward(self, input_embedding: torch.tensor, padding_mask: torch.tensor = None):
+        # input_embedding.shape(batchsize,max_len,embedding)
+        # padding_mask.shape(batchsize,max_len)
         in_emb_pos = input_embedding + self.pos[:, 0 : input_embedding.shape[1], :]
+        if padding_mask is not None:
+            padding_mask = padding_mask.unsqueeze(2).expand(
+                padding_mask.size(0), padding_mask.size(1), self.d_model
+            )
+        in_emb_pos[padding_mask == 0] = 0
         return in_emb_pos
 
 
@@ -32,11 +41,23 @@ class MultiHeadAttention(nn.Module):
         self.v_matrix = nn.Linear(d_model, d_model, bias=False)
         self.o_matrix = nn.Linear(d_model, d_model, bias=False)
 
-    def mask_softmax(self, attention_weights, padding_mask=None):
-        """遮蔽softmax"""
+    def mask_softmax(self, attention_scores, padding_mask: torch.Tensor = None):
+        """遮蔽softmax
+        attention_scores.shape(batch_size*num_head,max_len,max_len)
+        padding_mask.shape(batch_size,max_len)
+        """
         if padding_mask is None:
-            return F.softmax(attention_weights, -1)
-        print(padding_mask.shape)
+            return F.softmax(attention_scores, -1)
+        # padding_mask = padding_mask.repeat_interleave(
+        #     padding_mask.size(-1), dim=0
+        # ).reshape(padding_mask.size(0), padding_mask.size(1), -1)
+        padding_mask = padding_mask.unsqueeze(1).expand(
+            padding_mask.size(0), padding_mask.size(1), padding_mask.size(1)
+        )
+        # 使用expand会返回view，节约内存
+        padding_mask = padding_mask.repeat_interleave(self.num_head, dim=0)
+        attention_scores[padding_mask == 0] = -3000
+        return F.softmax(attention_scores, -1)
 
     def attention(
         self,
@@ -135,9 +156,9 @@ class Transformer(nn.Module):
 
     def forward(self, input, padding_mask=None):
         input_enbedding = self.enbedding_layer(input)
-        in_emb_pos = self.pos_layer(input_enbedding)
+        in_emb_pos = self.pos_layer(input_enbedding, padding_mask)
         encoding_information = self.encoding_block(in_emb_pos, padding_mask)
-        return input_enbedding
+        return encoding_information
 
 
 if __name__ == "__main__":

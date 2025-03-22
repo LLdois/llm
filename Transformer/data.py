@@ -29,7 +29,7 @@ def create_tokenizer(raw_dataset, vocab_size, min_frequency, save_path=None):
 
 
 def return_tokenized(raw_dataset, tokenizer: Tokenizer, max_len):
-    """返回token化后的数据"""
+    """返回token化后的数据，添加padding特殊token，不添加别的"""
     # 设置tokenizer的行为
     # token的模板
     tokenizer.post_processor = TemplateProcessing(
@@ -45,8 +45,6 @@ def return_tokenized(raw_dataset, tokenizer: Tokenizer, max_len):
     tokenizer.enable_truncation(max_length=max_len)
     raw_dataset_en = raw_dataset["train"]["en"]
     raw_dataset_ch = raw_dataset["train"]["ch"]
-    # tokenized_en = tokenizer.encode_batch(raw_dataset_en, add_special_tokens=True)
-    # tokenized_ch = tokenizer.encode_batch(raw_dataset_ch, add_special_tokens=True)
     # 批量token化
     batch_size = int(len(raw_dataset_en) / 100)
     tokenized_en = []
@@ -130,6 +128,10 @@ if __name__ == "__main__":
     tokenized_en, tokenized_ch = return_tokenized(
         raw_dataset=raw_dataset, tokenizer=tokenizer, max_len=200
     )
+    # print(tokenized_en[0])
+    # print(tokenized_ch[0])
+    # print(tokenized_en[0].ids)
+    # print(tokenized_ch[0].ids)
     # # 分析数据集
     # ids_len_en = []
     # ids_len_ch = []

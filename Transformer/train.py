@@ -5,6 +5,21 @@ from tokenizers import Tokenizer
 from data import return_tokenized, return_dataloader
 import model
 
+
+def trainer():
+    """
+    Args:
+        - model: 需要训练的模型 (nn.Module)
+        - dataloader: 训练数据集的 DataLoader
+        - criterion: 损失函数 (nn.Module)
+        - optimizer: 优化器 (torch.optim)
+        - device: 计算设备 ('cuda' or 'cpu')
+        - num_epochs: 训练轮数 (int)
+        - scheduler: 学习率调整策略 (可选，默认 None)
+    """
+    pass
+
+
 if __name__ == "__main__":
     # 从hugging face下载
     # 超参数
@@ -13,9 +28,11 @@ if __name__ == "__main__":
     save_tokenzier = save_dir + "/" + "tokenizer.json"
 
     vocab_size = 8000
+    N = 2
     d_model = 512
     d_ff = 2048
     num_head = 8
+    p_drop = 0.1
 
     min_frequency = 4
     max_len = 200
@@ -52,13 +69,16 @@ if __name__ == "__main__":
     transformer = model.Transformer(
         vocab_size=vocab_size,
         max_len=max_len,
+        N=N,
         d_model=d_model,
         d_ff=d_ff,
         num_head=num_head,
+        p_drop=p_drop,
     )
-    # for input in train_dataloader:
-    #     print(input["src_ids"].shape)
-    #     print(input["src_mask"].shape)
-    #     break
     input = next(iter(train_dataloader))
-    output = transformer(input["src_ids"], input["src_padmask"])
+    output = transformer(
+        input["src_ids"], input["tar_ids"], input["src_padmask"], input["tar_padmask"]
+    )
+    print(output[0][0])
+    print(output.shape)
+    print(transformer.training)

@@ -29,8 +29,24 @@ def create_tokenizer(raw_dataset, vocab_size, min_frequency, save_path=None):
 
 
 def return_tokenized(raw_dataset, tokenizer: Tokenizer, max_len):
-    """返回token化后的数据，添加padding特殊token，不添加别的"""
+    """返回token化后的数据,添加padding特殊token"""
+    # 先处理src序列
     # 设置tokenizer的行为
+    # src序列不需要添加[BOS]和[EOS]
+    # padding
+    tokenizer.enable_padding(pad_id=tokenizer.token_to_id("[PAD]"), length=max_len - 1)
+    # truncation
+    tokenizer.enable_truncation(max_length=max_len - 1)
+    raw_dataset_en = raw_dataset["train"]["en"]
+    # 批量token化
+    batch_size = int(len(raw_dataset_en) / 100)
+    tokenized_en = []
+    for i in range(0, len(raw_dataset_en), batch_size):
+        tokenized_en += tokenizer.encode_batch(
+            raw_dataset_en[i : min(i + batch_size, len(raw_dataset_en))],
+            add_special_tokens=True,
+        )
+    # 处理tgt序列
     # token的模板
     tokenizer.post_processor = TemplateProcessing(
         single="[BOS] $A [EOS]",
@@ -43,19 +59,13 @@ def return_tokenized(raw_dataset, tokenizer: Tokenizer, max_len):
     tokenizer.enable_padding(pad_id=tokenizer.token_to_id("[PAD]"), length=max_len)
     # truncation
     tokenizer.enable_truncation(max_length=max_len)
-    raw_dataset_en = raw_dataset["train"]["en"]
     raw_dataset_ch = raw_dataset["train"]["ch"]
     # 批量token化
-    batch_size = int(len(raw_dataset_en) / 100)
-    tokenized_en = []
+    batch_size = int(len(raw_dataset_ch) / 100)
     tokenized_ch = []
-    for i in range(0, len(raw_dataset_en), batch_size):
-        tokenized_en += tokenizer.encode_batch(
-            raw_dataset_en[i : min(i + batch_size, len(raw_dataset_en))],
-            add_special_tokens=True,
-        )
+    for i in range(0, len(raw_dataset_ch), batch_size):
         tokenized_ch += tokenizer.encode_batch(
-            raw_dataset_ch[i : min(i + batch_size, len(raw_dataset_en))],
+            raw_dataset_ch[i : min(i + batch_size, len(raw_dataset_ch))],
             add_special_tokens=True,
         )
     return tokenized_en, tokenized_ch
@@ -78,16 +88,16 @@ class CustomDataset(Dataset):
 
         return {
             "src_ids": torch.tensor(self.tokenized_en[i].ids),
-            "src_padmask": torch.tensor(self.tokenized_en[i].attention_mask),
-            "tar_ids": torch.tensor(self.tokenized_ch[i].ids),
-            "tar_padmask": torch.tensor(self.tokenized_ch[i].attention_mask),
+            "src_padding_mask": torch.tensor(self.tokenized_en[i].attention_mask),
+            "tgt_ids": torch.tensor(self.tokenized_ch[i].ids),
+            "tgt_padding_mask": torch.tensor(self.tokenized_ch[i].attention_mask),
         }
 
 
 def return_dataloader(
     tokenized_en, tokenized_ch, ratio, batch_size: int, shuffle: bool
 ):
-    """返回训练，验证，测试的dataloader"""
+    """返回训练,验证,测试的dataloader"""
     dataset_torch = CustomDataset(tokenized_en=tokenized_en, tokenized_ch=tokenized_ch)
     # 划分数据集
     train_dataset, val_dataset, test_dataset = random_split(
@@ -128,6 +138,8 @@ if __name__ == "__main__":
     tokenized_en, tokenized_ch = return_tokenized(
         raw_dataset=raw_dataset, tokenizer=tokenizer, max_len=200
     )
+    print(tokenized_en[0])
+    print(tokenized_en[0].ids)
     # print(tokenized_en[0])
     # print(tokenized_ch[0])
     # print(tokenized_en[0].ids)

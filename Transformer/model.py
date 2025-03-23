@@ -9,16 +9,17 @@ import torch.nn.functional as F
 class PositionalEncoding(nn.Module):
     """位置编码"""
 
-    def __init__(self, max_len: int, d_model: int):
+    def __init__(self, device: torch.device, max_len: int, d_model: int):
         """
         初始化位置编码。
 
         Args:
+            device (torch.device): 设备(CPU或GPU)。
             max_len (int): 模型可输入序列的最大长度。
             d_model (int): Transformer 的隐藏层维度。
         """
         super().__init__()
-        self.pos = torch.zeros((1, max_len, d_model))
+        self.pos = torch.zeros((1, max_len, d_model), device=device)
         temp = torch.arange(max_len).reshape(-1, 1) / torch.pow(
             10000, torch.arange(0, d_model, 2) / d_model
         )
@@ -51,19 +52,27 @@ class PositionalEncoding(nn.Module):
 class MultiHeadAttention(nn.Module):
     """多头注意力"""
 
-    def __init__(self, d_model: int, num_head: int, is_causal_mask: bool = False):
+    def __init__(
+        self,
+        device: torch.device,
+        d_model: int,
+        num_head: int,
+        is_causal_mask: bool = False,
+    ):
         """
         初始化多头注意力机制。
 
         Args:
+            device (torch.device): 设备(CPU或GPU)。
             d_model (int): Transformer 的隐藏层维度。
             num_head (int): 多头注意力的头数。
             is_causal_mask (bool, optional): 是否使用因果掩码 (解码器使用)。默认为 False。
         """
-        self.is_causal_mask = is_causal_mask
         super().__init__()
+        self.device = device
         self.d_model = d_model
         self.num_head = num_head
+        self.is_causal_mask = is_causal_mask
 
         self.q_matrix = nn.Linear(d_model, d_model, bias=False)
         self.k_matrix = nn.Linear(d_model, d_model, bias=False)
@@ -96,7 +105,10 @@ class MultiHeadAttention(nn.Module):
         attention_scores = attention_scores.masked_fill(padding_mask, -1e9)
         # 添加因果掩码
         if self.is_causal_mask:
-            mask = torch.ones((attention_scores.size(-2), attention_scores.size(-1)))
+            mask = torch.ones(
+                (attention_scores.size(-2), attention_scores.size(-1)),
+                device=self.device,
+            )
             mask = mask.triu(diagonal=1)
             mask = mask.unsqueeze(0) == 1
             attention_scores = attention_scores.masked_fill(mask, -1e9)
@@ -237,11 +249,19 @@ class PositionWiseFfn(nn.Module):
 class EncoderBlock(nn.Module):
     """第i个Transformer编码器块,i=0,1,2,3...,N-1,用于对源序列进行特征提取和表示学习。"""
 
-    def __init__(self, d_model: int, d_ff: int, num_head: int, p_drop: float):
+    def __init__(
+        self,
+        device: torch.device,
+        d_model: int,
+        d_ff: int,
+        num_head: int,
+        p_drop: float,
+    ):
         """
         初始化编码器块。
 
         Args:
+            device (torch.device): 设备(CPU或GPU)。
             d_model (int): Transformer 宽度,即输入和输出的隐藏层特征数。
             d_ff (int): 前馈网络 (FFN) 的隐藏层维度
             num_head (int): 多头注意力 (Multi-Head Attention) 机制中的注意力头数。
@@ -249,7 +269,8 @@ class EncoderBlock(nn.Module):
         """
         super().__init__()
         self.p_drop = p_drop
-        self.mh_attention_layer = MultiHeadAttention(d_model, num_head)
+        self.device = device
+        self.mh_attention_layer = MultiHeadAttention(self.device, d_model, num_head)
         self.layer_norm1 = nn.LayerNorm(d_model)
         self.layer_norm2 = nn.LayerNorm(d_model)
         self.pw_ffn_linear = PositionWiseFfn(d_model=d_model, d_ff=d_ff)
@@ -292,26 +313,37 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
     """第i个Transformer解码器块,i=0,1,2,3...,N-1"""
 
-    def __init__(self, d_model: int, d_ff: int, num_head: int, p_drop: float):
+    def __init__(
+        self,
+        device: torch.device,
+        d_model: int,
+        d_ff: int,
+        num_head: int,
+        p_drop: float,
+    ):
         """
         初始化解码器块。
 
         Args:
+            device (torch.device): 设备(CPU或GPU)。
             d_model (int): Transformer 宽度,即输入和输出的隐藏层特征数。
             d_ff (int): 前馈网络 (FFN) 的隐藏层维度
             num_head (int): 多头注意力 (Multi-Head Attention) 机制中的注意力头数。
             p_drop (float): Dropout 比率,用于正则化训练,防止过拟合。
         """
         super().__init__()
+        self.device = device
         # 解码器块需要添加因果掩码
         self.causal_mask = True
         self.p_drop = p_drop
         # caucal注意力
         self.causal_mh_attention_layer = MultiHeadAttention(
-            d_model, num_head, is_causal_mask=self.causal_mask
+            self.device, d_model, num_head, is_causal_mask=self.causal_mask
         )
         # 交叉注意力,与编码器的注意力计算方式一样,只是q来自于解码器,k和v来自编码器
-        self.cross_mh_attention_layer = MultiHeadAttention(d_model, num_head)
+        self.cross_mh_attention_layer = MultiHeadAttention(
+            self.device, d_model, num_head
+        )
         self.layer_norm1 = nn.LayerNorm(d_model)
         self.layer_norm2 = nn.LayerNorm(d_model)
         self.layer_norm3 = nn.LayerNorm(d_model)
@@ -321,16 +353,16 @@ class DecoderBlock(nn.Module):
         self,
         encoder_output: torch.Tensor,
         decoder_output: torch.Tensor,
-        tar_padding_mask: torch.Tensor = None,
+        tgt_padding_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
             encoder_output (torch.Tensor): 编码器 (Encoder) 的输出,shape为 (batch_size, max_len, d_model)。
             decoder_output (torch.Tensor): 上一个解码器块的输出：
                 - 当 i > 0 时,为第 i-1 个解码器块的输出。
-                - 当 i == 0 时,为目标序列 (target sequence) 的嵌入表示 (tar_embedding)。
+                - 当 i == 0 时,为目标序列 (tgtget sequence) 的嵌入表示 (tgt_embedding)。
                 shape为 (batch_size, max_len, d_model)。
-            tar_padding_mask (torch.Tensor, optional): 目标序列的填充掩码,标识填充部分 (padding positions),
+            tgt_padding_mask (torch.Tensor, optional): 目标序列的填充掩码,标识填充部分 (padding positions),
                 shape为 (batch_size, max_len)。如果为 None,则不进行填充掩码计算。
 
         Returns:
@@ -342,7 +374,7 @@ class DecoderBlock(nn.Module):
                 self.causal_mh_attention_layer(
                     q_raw=decoder_output,
                     kv_raw=decoder_output,
-                    padding_mask=tar_padding_mask,
+                    padding_mask=tgt_padding_mask,
                 ),
                 p=self.p_drop,
             )
@@ -353,7 +385,7 @@ class DecoderBlock(nn.Module):
                 self.cross_mh_attention_layer(
                     q_raw=encoder_output,
                     kv_raw=decoder_output,
-                    padding_mask=tar_padding_mask,
+                    padding_mask=tgt_padding_mask,
                 ),
                 p=self.p_drop,
             )
@@ -369,6 +401,7 @@ class Transformer(nn.Module):
 
     def __init__(
         self,
+        device: torch.device,
         vocab_size: int,
         max_len: int,
         N: int,
@@ -376,11 +409,13 @@ class Transformer(nn.Module):
         d_ff: int,
         num_head: int,
         p_drop: float,
+        is_autorge: bool = False,
     ):
         """
         初始化 Transformer 模型。
 
         Args:
+            device (torch.device): 设备(CPU或GPU)。
             vocab_size (int): 词汇表大小。
             max_len (int): 模型可接受的最大序列长度。
             N (int): 编码器和解码器块的数量。
@@ -390,49 +425,49 @@ class Transformer(nn.Module):
             p_drop (float): Dropout 率。
         """
         super().__init__()
+        self.device = device
         self.N = N
         self.p_drop = p_drop
 
         self.embedding_layer = nn.Embedding(vocab_size, d_model, padding_idx=0)
-        self.pos_layer = PositionalEncoding(max_len=max_len, d_model=d_model)
+        self.pos_layer = PositionalEncoding(
+            device=self.device, max_len=max_len, d_model=d_model
+        )
 
-        self.encoder = nn.Sequential()
-        self.decoder = nn.Sequential()
+        self.encoder_seq = nn.Sequential()
+        self.decoder_seq = nn.Sequential()
 
         for i in range(N):
-            self.encoder.add_module(
+            self.encoder_seq.add_module(
                 "encoder_block" + str(i),
                 EncoderBlock(
-                    d_model=d_model, d_ff=d_ff, num_head=num_head, p_drop=self.p_drop
+                    self.device,
+                    d_model=d_model,
+                    d_ff=d_ff,
+                    num_head=num_head,
+                    p_drop=self.p_drop,
                 ),
             )
-            self.decoder.add_module(
+            self.decoder_seq.add_module(
                 "decoder_block" + str(i),
                 DecoderBlock(
-                    d_model=d_model, d_ff=d_ff, num_head=num_head, p_drop=self.p_drop
+                    device,
+                    d_model=d_model,
+                    d_ff=d_ff,
+                    num_head=num_head,
+                    p_drop=self.p_drop,
                 ),
             )
 
         self.output_linear = nn.Linear(d_model, vocab_size)
 
-    def forward(
-        self,
-        src_ids: torch.Tensor,
-        tar_ids: torch.Tensor,
-        src_padding_mask: torch.Tensor = None,
-        tar_padding_mask: torch.Tensor = None,
-    ) -> torch.Tensor:
+    def encoder(self, src_ids: torch.Tensor, src_padding_mask: torch.Tensor) -> list:
         """
-        前向传播。
-
         Args:
             src_ids (torch.Tensor): 源序列的 token idsshape (batch_size, max_len)。
-            tar_ids (torch.Tensor): 目标序列的 token idsshape (batch_size, max_len)。
             src_padding_mask (torch.Tensor, optional): 源序列的 padding mask。
-            tar_padding_mask (torch.Tensor, optional): 目标序列的 padding mask。
-
         Returns:
-            torch.Tensor: 返回最终每个token属于每个vocab中token的logits
+            encoder_output_list (list):encoder每层的隐藏状态
         """
         # 经过编码器
         src_embedding = self.embedding_layer(src_ids)
@@ -441,33 +476,74 @@ class Transformer(nn.Module):
         src_emb_pos = F.dropout(src_emb_pos, self.p_drop)
         # 经过N个编码器块
         encoder_output_list = []
-        for i, encoder_block in enumerate(self.encoder):
+        for i, encoder_block in enumerate(self.encoder_seq):
             if i == 0:
                 encoder_output_list.append(encoder_block(src_emb_pos, src_padding_mask))
             else:
                 encoder_output_list.append(
                     encoder_block(encoder_output_list[i - 1], src_padding_mask)
                 )
+        return encoder_output_list
+
+    def decoder(
+        self,
+        encoder_output_list: list,
+        tgt_ids: torch.Tensor,
+        tgt_padding_mask: torch.Tensor,
+    ) -> list:
+        """
+        Args:
+            encoder_output_list (list):encoder每层的隐藏状态
+            tgt_ids (torch.Tensor): 目标序列的 token idsshape (batch_size, max_len)。
+            tgt_padding_mask (torch.Tensor, optional): 目标序列的 padding mask。
+        Returns:
+            decoder_output_list (list):decoder每层的隐藏状态
+        """
         # 经过解码器
-        tar_embedding = self.embedding_layer(tar_ids)
-        tar_emb_pos = self.pos_layer(tar_embedding, tar_padding_mask)
+        tgt_embedding = self.embedding_layer(tgt_ids)
+        tgt_emb_pos = self.pos_layer(tgt_embedding, tgt_padding_mask)
         # 添加dropout
-        tar_emb_pos = F.dropout(tar_emb_pos, p=self.p_drop)
+        tgt_emb_pos = F.dropout(tgt_emb_pos, p=self.p_drop)
         # 经过N个解码器块
         decoder_output_list = []
-        for i, decoder_block in enumerate(self.decoder):
+        for i, decoder_block in enumerate(self.decoder_seq):
             if i == 0:
                 decoder_output_list.append(
-                    decoder_block(encoder_output_list[i], tar_emb_pos, tar_padding_mask)
+                    decoder_block(encoder_output_list[i], tgt_emb_pos, tgt_padding_mask)
                 )
             else:
                 decoder_output_list.append(
                     decoder_block(
                         encoder_output_list[i],
                         decoder_output_list[i - 1],
-                        tar_padding_mask,
+                        tgt_padding_mask,
                     )
                 )
+        return decoder_output_list
+
+    def forward(
+        self,
+        src_ids: torch.Tensor,
+        tgt_ids: torch.Tensor,
+        src_padding_mask: torch.Tensor = None,
+        tgt_padding_mask: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """
+        前向传播。
+
+        Args:
+            src_ids (torch.Tensor): 源序列的 token idsshape (batch_size, max_len)。
+            tgt_ids (torch.Tensor): 目标序列的 token idsshape (batch_size, max_len)。
+            src_padding_mask (torch.Tensor, optional): 源序列的 padding mask。
+            tgt_padding_mask (torch.Tensor, optional): 目标序列的 padding mask。
+
+        Returns:
+            torch.Tensor: 返回最终每个token属于每个vocab中token的logits
+        """
+        encoder_output_list = self.encoder(src_ids, src_padding_mask)
+        decoder_output_list = self.decoder(
+            encoder_output_list, tgt_ids, tgt_padding_mask
+        )
         return self.output_linear(decoder_output_list[-1])
 
 

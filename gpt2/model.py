@@ -10,13 +10,15 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         self.config = config
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=True)
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=True)
+        self.c_proj.res_std = True
         self.register_buffer(
             "caucal_mask",
             torch.tril(torch.ones(config.block_size, config.block_size)).view(
                 1, 1, config.block_size, config.block_size
             ),
         )
+        self
 
     def forward(self, x):
         batch_size, seq_len, n_embd = x.shape
@@ -50,6 +52,7 @@ class Mlp(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=True)
         self.gelu = nn.GELU(approximate="tanh")
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=True)
+        self.c_proj.res_std = True
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -87,12 +90,25 @@ class GPT(nn.Module):
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.transformer.wte.weight = self.lm_head.weight
+        self.apply(self._init_weights)
 
-    def forward(self, idx):
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            res_std = 0.02
+            if hasattr(module, "res_std"):
+                res_std = (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=res_std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        if isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(self, idx: torch.Tensor, targets: torch.Tensor = None):
         batch_size, seq_len = idx.shape
         assert (
             seq_len <= self.config.block_size
-        ), "序列长度seq_len：{seq_len}不能大于{self.config.block_size}"
+        ), f"小批量序列长度seq_len：{seq_len}不能大于{self.config.block_size}"
         pos = torch.arange(seq_len, dtype=torch.long, device=idx.device)
         pos_emb = self.transformer.wpe(pos)
         tok_emb = self.transformer.wte(idx)
@@ -101,7 +117,10 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type):

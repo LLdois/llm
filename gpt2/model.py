@@ -1,4 +1,5 @@
 import math
+import inspect
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -33,14 +34,18 @@ class CausalSelfAttention(nn.Module):
         v = v.view(batch_size, seq_len, self.config.n_head, -1).transpose(
             1, 2
         )  # shape(batch_size,n_head,seq_len,n_embd/n_head)
-        attention_scores = (q @ k.transpose(-2, -1)) / math.sqrt(q.size(-1))
-        attention_scores = attention_scores.masked_fill(
-            self.caucal_mask[0, 0, :seq_len, :seq_len] == 0, float("-inf")
-        )
-        attention_weights = F.softmax(
-            attention_scores, -1
-        )  # shape(batch_size,n_head,seq_len,seq_len)
-        y = attention_weights @ v  ## shape(batch_size,n_head,seq_len,n_embd/n_head)
+        # 普通attention
+        # attention_scores = (q @ k.transpose(-2, -1)) / math.sqrt(q.size(-1))
+        # attention_scores = attention_scores.masked_fill(
+        #     self.caucal_mask[0, 0, :seq_len, :seq_len] == 0, float("-inf")
+        # )
+        # attention_weights = F.softmax(
+        #     attention_scores, -1
+        # )  # shape(batch_size,n_head,seq_len,seq_len)
+        # y = attention_weights @ v  ## shape(batch_size,n_head,seq_len,n_embd/n_head)
+
+        # flash attention
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
         y = self.c_proj(y)
         return y
@@ -121,6 +126,32 @@ class GPT(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
+
+    def configure_optimizers(self, weight_decay, learning_rate, device):
+        parm_dict = {pn: p for pn, p in self.named_parameters()}
+        parm_dict = {pn: p for pn, p in parm_dict.items() if p.requires_grad}
+        decay_params = [p for n, p in parm_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in parm_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {"params": decay_params, "weght_decay": weight_decay},
+            {"params": nodecay_params, "weght_decay": 0},
+        ]
+        num_dacay_params = sum(p.numel() for p in decay_params)
+        num_nodacay_params = sum(p.numel() for p in nodecay_params)
+        print(
+            f"权重衰减的tensor数量:{len(decay_params)},共 {num_dacay_params:,} 个parameters"
+        )
+        print(
+            f"没有权重衰减的tensor数量:{len(nodecay_params)},共 {num_nodacay_params:,} 个parameters"
+        )
+        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+        # fused简单来说就是加速
+        use_fused = fused_available and "cuda" in device
+        print(f"使用 AdamW fused:{use_fused}")
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused
+        )
+        return optimizer
 
     @classmethod
     def from_pretrained(cls, model_type):

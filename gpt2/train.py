@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import torch
 import torch.nn as nn
+import tiktoken
 from torch.nn import functional as F
 from model import GPT
 
@@ -13,6 +14,26 @@ class GPTConfig:
     n_head: int = 12
     n_embd: int = 768
     vocab_size: int = 50257
+
+
+max_lr = 6e-4
+min_lr = max_lr * 0.1
+warmup_steps = 10
+max_steps = 50
+
+
+# 学习率调度器
+def get_lr(it):
+    import math
+
+    if it < warmup_steps:
+        return max_lr * (it + 1) / warmup_steps
+    if it > max_steps:
+        return min_lr
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
 
 
 @dataclass
@@ -50,17 +71,17 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(42)
-    device = "cuda:1" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"使用device:{device}")
-    model = GPT(GPTConfig)
+    model = GPT(GPTConfig(vocab_size=50304))
     model.eval()
     model.to(device)
+    model = torch.compile(model)
 
-    import tiktoken
+    # import tiktoken
 
-    num_return_sequences = 5
-    max_length = 30
-
+    # num_return_sequences = 5
+    # max_length = 30
     # 加载hugginf face参数测试
     # model = GPT.from_pretrained("gpt2")
     # model.to(device)
@@ -111,8 +132,12 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
 
     train_loader = DataLoaderLite(8, 1024)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-    for i in range(50):
+    # optimizer = torch.optim.AdamW(
+    #     model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8
+    # )
+    # 定制AdamW
+    optimizer = model.configure_optimizers(0.1, 3e-8, device)
+    for step in range(max_steps):
         t0 = time.time()
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
@@ -120,11 +145,15 @@ if __name__ == "__main__":
         with torch.autocast(device_type=device, dtype=torch.bfloat16):
             logits, loss = model(x, y)
         loss.backward()
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        lr = get_lr(step)
+        for pa in optimizer.param_groups:
+            pa["lr"] = lr
         optimizer.step()
         torch.cuda.synchronize()
         t1 = time.time()
         dt = (t1 - t0) * 1000
         tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
         print(
-            f"step:{i},loss:{loss.item()},dt:{dt:.2f}ms,tokens/sec:{tokens_per_sec:.2f}"
+            f"step:{step},loss:{loss.item()},norm:{norm.item():.2f},lr:{lr},dt:{dt:.2f}ms,tokens/sec:{tokens_per_sec:.2f}"
         )

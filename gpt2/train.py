@@ -21,6 +21,15 @@ min_lr = max_lr * 0.1
 warmup_steps = 10
 max_steps = 50
 
+# 一个batch的token数
+total_batch_size = 524288
+B = 4
+T = 1024
+assert total_batch_size % (B * T) == 0
+grad_accum_step = total_batch_size // (B * T)
+print(f"原文中一个batchsize的总token数：{total_batch_size}")
+print(f"需要做梯度累计的step:{grad_accum_step}")
+
 
 # 学习率调度器
 def get_lr(it):
@@ -131,7 +140,7 @@ if __name__ == "__main__":
     # 使用tf32精度训练
     torch.set_float32_matmul_precision("high")
 
-    train_loader = DataLoaderLite(8, 1024)
+    train_loader = DataLoaderLite(B, T)
     # optimizer = torch.optim.AdamW(
     #     model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8
     # )
@@ -139,12 +148,16 @@ if __name__ == "__main__":
     optimizer = model.configure_optimizers(0.1, 3e-8, device)
     for step in range(max_steps):
         t0 = time.time()
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
-            logits, loss = model(x, y)
-        loss.backward()
+        loss_accum = 0
+        for mini_step in range(grad_accum_step):
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+            loss = loss / grad_accum_step
+            loss_accum += loss.item()
+            loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         lr = get_lr(step)
         for pa in optimizer.param_groups:
@@ -153,7 +166,7 @@ if __name__ == "__main__":
         torch.cuda.synchronize()
         t1 = time.time()
         dt = (t1 - t0) * 1000
-        tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
+        tokens_per_sec = (train_loader.B * train_loader.T * grad_accum_step) / (t1 - t0)
         print(
-            f"step:{step},loss:{loss.item()},norm:{norm.item():.2f},lr:{lr},dt:{dt:.2f}ms,tokens/sec:{tokens_per_sec:.2f}"
+            f"step:{step},loss:{loss_accum},norm:{norm.item():.2f},lr:{lr:.8f},dt:{dt:.2f}ms,tokens/sec:{tokens_per_sec:.2f}"
         )

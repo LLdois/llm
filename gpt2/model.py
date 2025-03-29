@@ -127,7 +127,9 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
 
-    def configure_optimizers(self, weight_decay, learning_rate, device):
+    def configure_optimizers(
+        self, weight_decay, learning_rate, device, is_master_process=False
+    ):
         parm_dict = {pn: p for pn, p in self.named_parameters()}
         parm_dict = {pn: p for pn, p in parm_dict.items() if p.requires_grad}
         decay_params = [p for n, p in parm_dict.items() if p.dim() >= 2]
@@ -138,16 +140,18 @@ class GPT(nn.Module):
         ]
         num_dacay_params = sum(p.numel() for p in decay_params)
         num_nodacay_params = sum(p.numel() for p in nodecay_params)
-        print(
-            f"权重衰减的tensor数量:{len(decay_params)},共 {num_dacay_params:,} 个parameters"
-        )
-        print(
-            f"没有权重衰减的tensor数量:{len(nodecay_params)},共 {num_nodacay_params:,} 个parameters"
-        )
+        if is_master_process:
+            print(
+                f"权重衰减的tensor数量:{len(decay_params)},共 {num_dacay_params:,} 个parameters"
+            )
+            print(
+                f"没有权重衰减的tensor数量:{len(nodecay_params)},共 {num_nodacay_params:,} 个parameters"
+            )
         fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
         # fused简单来说就是加速
         use_fused = fused_available and "cuda" in device
-        print(f"使用 AdamW fused:{use_fused}")
+        if is_master_process:
+            print(f"使用 AdamW fused:{use_fused}")
         optimizer = torch.optim.AdamW(
             optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused
         )

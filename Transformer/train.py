@@ -9,9 +9,16 @@ import torch
 from torch.utils.data import DataLoader
 from torch import optim
 from torch.optim import Optimizer
-from torch.nn import Module, CrossEntropyLoss
+from torch.nn import Module
 import torch.nn as nn
 from tqdm import tqdm
+from torch.nn.utils import clip_grad_norm_
+from dataclasses import dataclass
+
+seed = 1
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 
 
 def trainer(
@@ -25,24 +32,9 @@ def trainer(
     eval_interval: int = 5000,
     save_path: str = "best_model.pth",
 ):
-    """
-    训练函数（基于批次更新,并保存最佳模型）
-
-    Args:
-        model (torch.nn.Module): 定义的Transformer模型。
-        train_dataloader (DataLoader): 训练集的数据加载器。
-        val_dataloader (DataLoader): 验证集的数据加载器。
-        optimizer (torch.optim.Optimizer): 用于优化的优化器。
-        loss_fun (CrossEntropyLoss): 损失函数,通常使用交叉熵损失。
-        device (torch.device): 设备(CPU或GPU)。
-        max_steps (int): 训练的最大步数,默认值为100000。
-        eval_interval (int): 每隔多少步在验证集上评估一次,默认值为5000。
-        save_path (str): 保存最佳模型的路径,默认值为"best_model.pth"。
-
-    Returns:
-        None
-    """
     model.to(device)
+    # model = torch.compile(model)
+    torch.set_float32_matmul_precision("high")
     step = 0
     running_loss = 0.0
     best_val_loss = float("inf")  # 初始化最佳验证损失为无穷大
@@ -68,15 +60,26 @@ def trainer(
 
             optimizer.zero_grad()
 
+            # import code
+
+            # code.interact(local=locals())
+
             # 模型前向传播
-            logits = model(
-                src_ids, tgt_ids[:, 0:-1], src_padding_mask, tgt_padding_mask[:, 0:-1]
-            )
+            with torch.autocast(device_type=str(device), dtype=torch.bfloat16):
+                logits = model(
+                    src_ids,
+                    tgt_ids[:, 0:-1],
+                    src_padding_mask,
+                    tgt_padding_mask[:, 0:-1],
+                )
             # 计算损失
             loss = loss_fun(
                 logits.view(-1, logits.size(-1)), tgt_ids[:, 1:].contiguous().view(-1)
             )
+            print(f"loss:{loss.item()}")
             loss.backward()
+
+            clip_grad_norm_(model.parameters(), 1)
 
             optimizer.step()
 
@@ -115,18 +118,6 @@ def evaluate(
     loss_fun: torch.nn.CrossEntropyLoss,
     device: torch.device,
 ):
-    """
-    在验证集上评估模型的表现。
-
-    Args:
-        model (torch.nn.Module): 定义的Transformer模型。
-        val_dataloader (DataLoader): 验证集的数据加载器。
-        loss_fun (CrossEntropyLoss): 损失函数,通常使用交叉熵损失。
-        device (torch.device): 设备(CPU或GPU)。
-
-    Returns:
-        float: 平均验证损失。
-    """
     model.to(device)
     model.eval()
     running_loss = 0.0
@@ -153,81 +144,79 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    # 从hugging face下载
     # 超参数
-    file_name = "zetavg/coct-en-zh-tw-translations-twp-300k"
-    save_dir = "./output"
-    save_tokenzier = save_dir + "/" + "tokenizer.json"
-    weights_path = "./output/best_model.pth"
-    vocab_size = 8000
-    N = 2
-    d_model = 512
-    d_ff = 2048
-    num_head = 8
-    p_drop = 0.1
+    # model config
+    @dataclass
+    class config:
+        vocab_size: int = 8000
+        max_len: int = 256
+        N: int = 2
+        d_model: int = 512
+        n_head: int = 8
+        p_drop: float = 0.1
 
-    min_frequency = 4
-    # 最大长度指的是tgt_ids的最大长度,src_ids = max_len - 1
-    max_len = 200
-    ratio = (0.7, 0.1, 0.2)
-    batch_size = 32
-    shuffle = True
+    # train config
+    @dataclass
+    class train_config:
+        hugging_face_dataset: str = "zetavg/coct-en-zh-tw-translations-twp-300k"
+        save_dir: str = "./output"
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    max_steps = 100000
-    eval_interval = 10000
+        min_frequency: int = 4
+        save_tokenzier: str = os.path.join(save_dir, "tokenizer.json")
+        train_ratio = (0.9, 0.1)
+        batch_size: int = 64
 
-    if not os.path.exists(save_dir):
-        os.mkdir(save_dir)
+        shuffle = True
+
+        max_steps = 50000
+        eval_interval = 1000
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        check_point_path = os.path.join(save_dir, "model.pth")
+
+    if not os.path.exists(train_config.save_dir):
+        os.mkdir(train_config.save_dir)
 
     # 加载原始数据集
-    raw_dataset = load_dataset(file_name)
+    raw_dataset = load_dataset(train_config.hugging_face_dataset)
     print(raw_dataset.keys())
     print(raw_dataset["train"][0:3])
     # 基于原始数据训练tokenizer(BPE)
-    if not os.path.exists(save_tokenzier):
+    if not os.path.exists(train_config.save_tokenzier):
         create_tokenizer(
             raw_dataset,
-            vocab_size=vocab_size,
-            min_frequency=min_frequency,
-            save_path=save_tokenzier,
+            vocab_size=train_config.vocab_size,
+            min_frequency=train_config.min_frequency,
+            save_path=train_config.save_tokenzier,
         )
     # 加载训练好的tokenizer
-    tokenizer = Tokenizer.from_file(save_tokenzier)
+    tokenizer = Tokenizer.from_file(train_config.save_tokenzier)
     # token化数据
     tokenized_en, tokenized_ch = return_tokenized(
-        raw_dataset=raw_dataset, tokenizer=tokenizer, max_len=max_len
+        raw_dataset=raw_dataset, tokenizer=tokenizer, max_len=config.max_len
     )
     # 划分数据集并返回dataloader
-    train_dataloader, val_dataloader, test_dataloader = return_dataloader(
-        tokenized_en, tokenized_ch, ratio, batch_size, shuffle
+    train_dataloader, val_dataloader = return_dataloader(
+        tokenized_en,
+        tokenized_ch,
+        train_config.train_ratio,
+        train_config.batch_size,
+        train_config.shuffle,
     )
     # 定义transformer模型
-    transformer = model.Transformer(
-        device=device,
-        vocab_size=vocab_size,
-        max_len=max_len - 1,
-        N=N,
-        d_model=d_model,
-        d_ff=d_ff,
-        num_head=num_head,
-        p_drop=p_drop,
-    )
-    # # 继续训练
-    # if weights_path:
-    #     transformer.load_state_dict(torch.load(weights_path))
+    transformer = model.Transformer(config)
     # 优化器
     optimizer = optim.AdamW(transformer.parameters(), lr=0.001, weight_decay=0.01)
     # 损失函数
-    loss_fun = nn.CrossEntropyLoss()
+    loss_fun = nn.CrossEntropyLoss(ignore_index=0)
     trainer(
         transformer,
         train_dataloader,
         val_dataloader,
         optimizer,
         loss_fun,
-        device,
-        max_steps=100000,
-        eval_interval=10000,
-        save_path=save_dir + "/" + "best_model.pth",
+        train_config.device,
+        train_config.max_steps,
+        train_config.eval_interval,
+        train_config.check_point_path,
     )

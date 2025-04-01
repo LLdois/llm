@@ -10,7 +10,7 @@ from tokenizers.processors import TemplateProcessing
 
 
 def create_tokenizer(raw_dataset, vocab_size, min_frequency, save_path=None):
-    """"""
+    """训练tokenizer"""
 
     tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
 
@@ -100,15 +100,15 @@ def return_dataloader(
     """返回训练,验证,测试的dataloader"""
     dataset_torch = CustomDataset(tokenized_en=tokenized_en, tokenized_ch=tokenized_ch)
     # 划分数据集
-    train_dataset, val_dataset, test_dataset = random_split(
+    train_dataset, val_dataset = random_split(
         dataset_torch, ratio, generator=torch.Generator().manual_seed(42)
     )
-    train_dataloader, val_dataloader, test_dataloader = [
+    train_dataloader, val_dataloader = [
         DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-        for dataset in (train_dataset, val_dataset, test_dataset)
+        for dataset in (train_dataset, val_dataset)
     ]
 
-    return train_dataloader, val_dataloader, test_dataloader
+    return train_dataloader, val_dataloader
 
 
 if __name__ == "__main__":

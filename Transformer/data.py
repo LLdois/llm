@@ -13,7 +13,6 @@ def create_tokenizer(raw_dataset, vocab_size, min_frequency, save_path=None):
     """训练tokenizer"""
 
     tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
-
     trainer = BpeTrainer(
         vocab_size=vocab_size,
         min_frequency=min_frequency,

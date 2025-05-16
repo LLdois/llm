@@ -148,9 +148,9 @@ if __name__ == "__main__":
     # model config
     @dataclass
     class config:
-        vocab_size: int = 8000
-        max_len: int = 256
-        N: int = 2
+        vocab_size: int = 32000
+        max_len: int = 256 + 1
+        N: int = 6
         d_model: int = 512
         n_head: int = 8
         p_drop: float = 0.1
@@ -160,19 +160,21 @@ if __name__ == "__main__":
     class train_config:
         hugging_face_dataset: str = "zetavg/coct-en-zh-tw-translations-twp-300k"
         save_dir: str = "./output"
+        vocab_size: int = 32000
 
-        min_frequency: int = 4
+        min_frequency: int = 6
         save_tokenzier: str = os.path.join(save_dir, "tokenizer.json")
         train_ratio = (0.9, 0.1)
         batch_size: int = 64
 
         shuffle = True
 
-        max_steps = 50000
+        max_steps = 400000
         eval_interval = 1000
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         check_point_path = os.path.join(save_dir, "model.pth")
+        pre_check_point_path = os.path.join(save_dir, "pre.pth")
 
     if not os.path.exists(train_config.save_dir):
         os.mkdir(train_config.save_dir)
@@ -205,10 +207,13 @@ if __name__ == "__main__":
     )
     # 定义transformer模型
     transformer = model.Transformer(config)
+    # 加载预训练权重
+    if os.path.exists(train_config.pre_check_point_path):
+        transformer.load_state_dict(torch.load(train_config.pre_check_point_path))
     # 优化器
-    optimizer = optim.AdamW(transformer.parameters(), lr=0.001, weight_decay=0.01)
+    optimizer = optim.AdamW(transformer.parameters(), lr=1e-6, weight_decay=0.01)
     # 损失函数
-    loss_fun = nn.CrossEntropyLoss(ignore_index=0)
+    loss_fun = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)
     trainer(
         transformer,
         train_dataloader,

@@ -5,6 +5,7 @@ import model
 import torch
 from torch.utils.data import DataLoader
 from torch.nn import Module
+import torch.nn.functional as F
 
 seed = 1
 torch.manual_seed(seed)
@@ -37,25 +38,25 @@ def inference(
         )
         # 制作目标序列
         tgt_string = "[BOS]"
-        tgt_token = tokenizer.encode(tgt_string)
-        tgt_ids = torch.tensor(tgt_token.ids).unsqueeze(0).to(device)
-        tgt_padding_mask = (
-            torch.tensor(tgt_token.attention_mask).unsqueeze(0).to(device)
-        )
+        tgt_ids = torch.tensor([1]).view(1, -1).to(device)
         encoder_output_list = model.encoder(src_ids, src_padding_mask)
 
         for i in range(0, max_len - 2):
             decoder_output_list = model.decoder(
-                encoder_output_list, tgt_ids, tgt_padding_mask
+                encoder_output_list, tgt_ids, src_padding_mask=src_padding_mask
             )
             logits = model.output_linear(decoder_output_list[-1])
-            tgt_ids[0, i + 1] = logits.argmax(dim=2)[0, i]
-            tgt_padding_mask[0, i + 1] = 1
-            if logits.argmax(dim=2)[0, i].item() == 2:
+            logits = logits[:, -1, :]
+            probs = F.softmax(logits, dim=-1)
+            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+            ix = torch.multinomial(topk_probs, 1)
+            xcol = torch.gather(topk_indices, -1, ix)
+            tgt_ids = torch.cat((tgt_ids, xcol), dim=1)
+            if xcol.item() == 2:
                 break
-        print(tgt_ids.cpu().tolist()[0])
+        print(tgt_ids)
         tgt_string = tokenizer.decode(tgt_ids.cpu().tolist()[0])
-        print(tgt_string)
+        print(f"tgt_string->>>{tgt_string},token_len->>>{tgt_ids.size(-1)}")
 
 
 if __name__ == "__main__":
@@ -65,9 +66,9 @@ if __name__ == "__main__":
 
     @dataclass
     class config:
-        vocab_size: int = 8000
-        max_len: int = 256
-        N: int = 2
+        vocab_size: int = 32000
+        max_len: int = 256 + 1
+        N: int = 6
         d_model: int = 512
         n_head: int = 8
         p_drop: float = 0.1
@@ -98,7 +99,9 @@ if __name__ == "__main__":
     transformer.load_state_dict(torch.load(train_config.check_point_path))
     transformer.to(device)
     # src_string = "While the China Times Group has decided to drop its loss-making evening paper, it has acquired a majority stake in CtiTV, a Taiwan cable TV operator, and has also expressed an interest in acquiring China Television Company (CTV), which would make the group Taiwan's biggest multimedia empire."
-    src_string = "who are you"
+    src_string = 'Civilian art, which is characterized by its non-academic foundation, developed in conjunction with the "liberalization of knowledge" trend kickstarted by Taiwan\'s community colleges in 1998. In fact, it was these community institutions that opened up a dialogue between Civilian Art and the academy, and Xizhi Community College that first incorporated Civilian Art into its curriculum'
+    # src_string = "art"
+    # print(f"src_string->>>{src_string}")
     inference(
         transformer, src_string, device, config.max_len, train_config.save_tokenizer
     )

@@ -20,7 +20,7 @@ class PositionalEncoding(nn.Module):
         self.pos[:, :, 0::2] = torch.sin(temp)
         self.pos[:, :, 1::2] = torch.cos(temp)
 
-    def forward(self, x: torch.tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, _ = x.shape
         assert T <= self.config.max_len, "必须小于最大长度"
         self.pos = self.pos.to(x.device)
@@ -54,7 +54,7 @@ class MultiHeadAttention(nn.Module):
         self,
         q_raw: torch.Tensor,
         kv_raw: torch.Tensor,
-        padding_mask: torch.Tensor = None,
+        kv_padding_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         B, T_q, _ = q_raw.shape
         B, T_kv, _ = kv_raw.shape
@@ -75,7 +75,9 @@ class MultiHeadAttention(nn.Module):
         # shape(B,config.n_head,T_q,d_model/n_head) or (B,config.n_head,T_kv,d_model/n_head)
 
         # 注意力机制
-        attention_scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.config.d_model)
+        attention_scores = (q @ k.transpose(-2, -1)) / math.sqrt(
+            self.config.d_model / self.config.n_head
+        )
         # shape(B,config.n_head,T_q,T_kv)
         # 添加因果掩码
         if self.is_causal_mask:
@@ -83,12 +85,14 @@ class MultiHeadAttention(nn.Module):
                 self.causal_mask[0, 0, :T_q, :T_q] == 0, float("-inf")
             )
         # 添加padding掩码
-        if padding_mask is not None:
-            # shape(B,T_q)
-            padding_mask = padding_mask.unsqueeze(1).repeat(1, T_q, 1).unsqueeze(1)
+        if kv_padding_mask is not None:
+            # shape(B,T_kv)
+            kv_padding_mask = (
+                kv_padding_mask.unsqueeze(1).repeat(1, T_q, 1).unsqueeze(1)
+            )
             # shape(B,1,T_q,T_kv)
             attention_scores = attention_scores.masked_fill(
-                padding_mask == 0, float("-inf")
+                kv_padding_mask == 0, float("-inf")
             )
         # 计算注意力权重
         attention_weights = F.softmax(attention_scores, -1)
@@ -108,6 +112,7 @@ class PositionWiseFfn(nn.Module):
     def __init__(self, config: dataclass):
 
         super().__init__()
+        self.config = config
         self.linear1 = nn.Linear(config.d_model, config.d_model * 4, bias=True)
         self.relu = nn.ReLU()
         self.linear2 = nn.Linear(config.d_model * 4, config.d_model, bias=True)
@@ -139,13 +144,13 @@ class EncoderBlock(nn.Module):
                 self.mh_attention_layer(
                     q_raw=encoder_output,
                     kv_raw=encoder_output,
-                    padding_mask=src_padding_mask,
+                    kv_padding_mask=src_padding_mask,
                 ),
                 p=self.config.p_drop,
             )
         )
         encoder_output = self.layer_norm2(
-            temp + F.dropout(self.pw_ffn_linear(temp), p=self.config.p_drop)
+            temp + F.dropout(self.pw_ffn_linear(temp), self.config.p_drop)
         )
         return encoder_output
 
@@ -173,6 +178,7 @@ class DecoderBlock(nn.Module):
         self,
         encoder_output: torch.Tensor,
         decoder_output: torch.Tensor,
+        src_padding_mask: torch.Tensor = None,
         tgt_padding_mask: torch.Tensor = None,
     ) -> torch.Tensor:
 
@@ -182,7 +188,7 @@ class DecoderBlock(nn.Module):
                 self.causal_mh_attention_layer(
                     q_raw=decoder_output,
                     kv_raw=decoder_output,
-                    padding_mask=tgt_padding_mask,
+                    kv_padding_mask=tgt_padding_mask,
                 ),
                 p=self.config.p_drop,
             )
@@ -193,13 +199,13 @@ class DecoderBlock(nn.Module):
                 self.cross_mh_attention_layer(
                     q_raw=temp,
                     kv_raw=encoder_output,
-                    padding_mask=tgt_padding_mask,
+                    kv_padding_mask=src_padding_mask,
                 ),
                 p=self.config.p_drop,
             )
         )
         decoder_output = self.layer_norm3(
-            temp + F.dropout(self.pw_ffn_linear(temp), p=self.config.p_drop)
+            temp + F.dropout(self.pw_ffn_linear(temp), self.config.p_drop)
         )
         return decoder_output
 
@@ -235,7 +241,7 @@ class Transformer(nn.Module):
 
     def encoder(self, src_ids: torch.Tensor, src_padding_mask: torch.Tensor) -> list:
         # 经过编码器
-        src_embedding = self.embedding_layer(src_ids)
+        src_embedding = self.embedding_layer(src_ids) * math.sqrt(self.config.d_model)
         src_emb_pos = self.pos_layer(src_embedding)
         # 添加dropout
         src_emb_pos = F.dropout(src_emb_pos, self.config.p_drop)
@@ -254,11 +260,12 @@ class Transformer(nn.Module):
         self,
         encoder_output_list: list,
         tgt_ids: torch.Tensor,
-        tgt_padding_mask: torch.Tensor,
+        src_padding_mask: torch.Tensor = None,
+        tgt_padding_mask: torch.Tensor = None,
     ) -> list:
 
         # 经过解码器
-        tgt_embedding = self.embedding_layer(tgt_ids)
+        tgt_embedding = self.embedding_layer(tgt_ids) * math.sqrt(self.config.d_model)
         tgt_emb_pos = self.pos_layer(tgt_embedding)
         # 添加dropout
         tgt_emb_pos = F.dropout(tgt_emb_pos, p=self.config.p_drop)
@@ -268,7 +275,10 @@ class Transformer(nn.Module):
             if i == 0:
                 decoder_output_list.append(
                     decoder_block(
-                        encoder_output_list[-1], tgt_emb_pos, tgt_padding_mask
+                        encoder_output_list[-1],
+                        tgt_emb_pos,
+                        src_padding_mask,
+                        tgt_padding_mask,
                     )
                 )
             else:
@@ -276,6 +286,7 @@ class Transformer(nn.Module):
                     decoder_block(
                         encoder_output_list[-1],
                         decoder_output_list[i - 1],
+                        src_padding_mask,
                         tgt_padding_mask,
                     )
                 )
@@ -291,7 +302,7 @@ class Transformer(nn.Module):
 
         encoder_output_list = self.encoder(src_ids, src_padding_mask)
         decoder_output_list = self.decoder(
-            encoder_output_list, tgt_ids, tgt_padding_mask
+            encoder_output_list, tgt_ids, src_padding_mask, tgt_padding_mask
         )
         return self.output_linear(decoder_output_list[-1])
 
@@ -309,14 +320,14 @@ if __name__ == "__main__":
         p_drop: float = 0.1
 
     input = torch.tensor([[4, 2, 5, 8, 0, 0], [4, 5, 85, 4, 2, 5]], dtype=torch.long)
-    padding_mask = torch.tensor(
+    kv_padding_mask = torch.tensor(
         [[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1]], dtype=torch.long
     )
     transformer = Transformer(config)
     input = input.to("cuda")
-    padding_mask = padding_mask.to("cuda")
+    kv_padding_mask = kv_padding_mask.to("cuda")
     transformer.to("cuda")
-    x = transformer(input, input, padding_mask, padding_mask)
+    x = transformer(input, input, kv_padding_mask, kv_padding_mask)
     # embedding = nn.Embedding(8000, 512)
     # x = embedding(input)
     # pos = PositionalEncoding(config)
@@ -324,6 +335,6 @@ if __name__ == "__main__":
     # encoder = EncoderBlock(config)
     # en = encoder(x)
     # decoder = DecoderBlock(config)
-    # x = decoder(en, x, padding_mask)
+    # x = decoder(en, x, kv_padding_mask)
     print(x)
     print(x.shape)

@@ -19,7 +19,6 @@ class CausalSelfAttention(nn.Module):
                 1, 1, config.block_size, config.block_size
             ),
         )
-        self
 
     def forward(self, x):
         batch_size, seq_len, n_embd = x.shape
